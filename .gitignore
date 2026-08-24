@@ -1,0 +1,34 @@
+# Raw and intermediate data
+data/raw/
+data/parquet/
+data/derived/
+*.parquet
+*.duckdb
+
+# Generated artifacts
+artifacts/
+exports/
+*.log
+*.tmp
+
+# Python and notebooks
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+**/.ipynb_checkpoints/
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# IDE and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
