@@ -1,48 +1,112 @@
-# CORE schema
+# Схема CORE
 
-Build timestamp: `2026-08-13T22:11:07+00:00`
-Source: immutable `raw.train`, `raw.test`, `raw.destinations`
-Architecture: `RAW → STAGING → CORE`; no CLEAN/SILVER or MARTS are materialized.
+Дата и время сборки: `2026-08-13T22:11:07+00:00`
 
-## Tables
+Источники: неизменяемые таблицы `raw.train`, `raw.test` и
+`raw.destinations`
 
-| Table | Grain | Primary key |
+Архитектура: `RAW → STAGING → CORE → MARTS`. Витрины собираются отдельным
+скриптом поверх слоя `CORE`.
+
+## Назначение слоёв
+
+| Слой | Назначение |
+|---|---|
+| `RAW` | Исходные данные без преобразований |
+| `STAGING` | Приведение типов, разбор дат, разметка дубликатов и добавление признаков качества |
+| `CORE` | Очищенные и нормализованные факты и справочники, используемые для дальнейшей аналитики |
+| `MARTS` | Агрегированные аналитические витрины для расчёта показателей и построения отчётности |
+
+## Таблицы CORE
+
+| Таблица | Гранулярность | Ключ |
 |---|---|---|
-| `core.dim_date` | one row per valid calendar day | `date_key` |
-| `core.dim_hour` | one row per hour of day | `hour_key` |
-| `core.dim_user` | one row per user | `user_id` |
-| `core.dim_user_location` | one row per observed user country/region/city combination | `user_location_id` |
-| `core.dim_platform` | one row per `site_name × posa_continent` | `platform_id` |
-| `core.dim_destination` | one row per destination ID, with latent `d1`…`d149` when available | `destination_id` |
-| `core.dim_destination_type` | one row per destination type ID | `destination_type_id` |
-| `core.dim_hotel_market` | one row per observed `hotel_market × hotel_country × hotel_continent` combination | `hotel_market_id` |
-| `core.dim_hotel_cluster` | one row per hotel cluster | `hotel_cluster_id` |
-| `core.dim_search_params` | one row per parameter combination: adults, children, rooms, stay nights, party size, children flag | `search_params_id` |
-| `core.fct_event` | one unique aggregated source log row after exact deduplication | `event_id` |
-| `core.fct_booking` | one train booking log event | `booking_id` |
-| `core.ref_distance_stats` | one median estimator per hierarchy group | composite group key |
+| `core.dim_date` | Одна строка на каждый корректный календарный день | `date_key` |
+| `core.dim_hour` | Одна строка на каждый час суток | `hour_key` |
+| `core.dim_user` | Одна строка на пользователя | `user_id` |
+| `core.dim_user_location` | Одна строка на каждое наблюдаемое сочетание страны, региона и города пользователя | `user_location_id` |
+| `core.dim_platform` | Одна строка на сочетание `site_name × posa_continent` | `platform_id` |
+| `core.dim_destination` | Одна строка на направление; при наличии добавляются скрытые признаки `d1`…`d149` | `destination_id` |
+| `core.dim_destination_type` | Одна строка на тип направления | `destination_type_id` |
+| `core.dim_hotel_market` | Одна строка на наблюдаемое сочетание `hotel_market × hotel_country × hotel_continent` | `hotel_market_id` |
+| `core.dim_hotel_cluster` | Одна строка на кластер гостиниц | `hotel_cluster_id` |
+| `core.dim_search_params` | Одна строка на сочетание количества взрослых, детей и комнат, длительности проживания, размера группы и наличия детей | `search_params_id` |
+| `core.fct_event` | Одна уникальная агрегированная строка исходного журнала после точного удаления дубликатов | `event_id` |
+| `core.fct_booking` | Одно событие бронирования из обучающей выборки | `booking_id` |
+| `core.ref_distance_stats` | Одна медианная оценка расстояния на каждую группу иерархии | Составной ключ группы |
 
-`dim_user_location` is present because `985,538` user IDs have multiple observed location combinations. `hotel_market` is keyed by the actual attribute combination because `57` market IDs violate the one-to-one country/continent mapping.
+Таблица `dim_user_location` выделена отдельно, поскольку у `985 538`
+пользователей наблюдается более одного сочетания страны, региона и города.
+Рынок гостиниц определяется по фактическому сочетанию его атрибутов, потому
+что для `57` идентификаторов рынка нарушено однозначное соответствие стране и
+континенту.
 
-## Fact semantics
+## Семантика таблиц фактов
 
-`fct_event` is not a click, search, session, or booking journey. `cnt` remains the multiplicity of the aggregated source row. `search_params_id` is only a surrogate for a parameter combination and is never a search/session identifier. `hotel_cluster_id` is a cluster, not a hotel ID.
+Строка `fct_event` не равна отдельному клику, поиску, сессии или полному
+сценарию бронирования. Поле `cnt` хранит количество одинаковых событий,
+объединённых в исходной строке.
 
-`booking_value_proxy` is 0 for non-bookings, 1 for hotel-only bookings, and 2 for package bookings; it is not money or revenue. `fct_booking` filters `is_booking = 1` and therefore contains train observations only.
+`search_params_id` — технический ключ сочетания параметров поиска, а не
+идентификатор поиска или сессии. `hotel_cluster_id` обозначает кластер
+гостиниц, а не конкретную гостиницу.
 
-## Quality and validity
+Поле `booking_value_proxy` принимает значение `0` для событий без
+бронирования, `1` для бронирования только гостиницы и `2` для пакетного
+бронирования. Это относительный показатель, а не денежная сумма или выручка.
 
-STAGING preserves source grain and source values, including NULL distance. It adds date parsing, duplicate metadata, and quality flags. The active project-date range is inclusive from `2013-01-01` through `2016-12-31` for event, check-in, and check-out dates. The legacy `q_extreme_future_date` field flags any present date outside that range. CORE keeps the first row of each exact source-payload duplicate group using deterministic `source_row_id` order. Suspicious records are not removed for quality reasons: out-of-range dates receive no `dim_date` key, and derived date metrics remain NULL. `lead_days` and `stay_nights` are populated only under their validity flags; same-day stays are excluded from `valid_for_stay_length` because their business meaning is ambiguous.
+Таблица `fct_booking` содержит только строки, для которых `is_booking = 1`.
+Поскольку в тестовой выборке признак `is_booking` отсутствует, таблица
+формируется только из обучающей выборки.
 
-## Distance
+## Качество и валидность данных
 
-`distance_raw` is immutable source distance. Missing values are filled only in CORE using median estimators and minimum support `5` in this order: city×destination, city×hotel market, region×destination, region×hotel market. The three country-level candidates are measured in the holdout but not applied because their errors are materially broader. Provenance and holdout validation metrics are stored in `fct_event` and `ref_distance_stats`.
+Слой `STAGING` сохраняет исходную гранулярность и значения, включая
+отсутствующие расстояния `NULL`. Дополнительно он выполняет разбор дат,
+размечает дубликаты и добавляет признаки качества.
 
-## Validation snapshot
+Допустимый диапазон дат проекта — с `2013-01-01` по `2016-12-31`
+включительно. Он применяется к дате события, заезда и выезда. Поле
+`q_extreme_future_date` отмечает записи, в которых хотя бы одна заполненная
+дата находится за пределами этого диапазона.
 
-- RAW rows: `40,198,536` (`train=37,670,293`, `test=2,528,243`)
-- STAGING interaction rows: `40,198,536`
-- exact-duplicate rows flagged in STAGING: `1,922`
-- CORE event rows: `40,197,567`
-- rows removed by controlled exact deduplication: `969`
+В `CORE` сохраняется первая строка из каждой группы полных дубликатов исходных
+полей. Выбор выполняется детерминированно по порядку `source_row_id`.
+
+Подозрительные записи не удаляются только из-за признаков качества. Для дат за
+пределами допустимого диапазона не назначается ключ из `dim_date`, а
+производные показатели дат остаются `NULL`.
+
+Поля `lead_days` и `stay_nights` заполняются только при выполнении условий их
+валидности. Проживание с заездом и выездом в один день исключается из
+`valid_for_stay_length`, поскольку его бизнес-смысл неоднозначен.
+
+## Обработка расстояния
+
+Поле `distance_raw` хранит исходное расстояние без изменений. Пропущенные
+значения заполняются только в `CORE` медианными оценками при минимальном числе
+наблюдений `5`.
+
+Оценки применяются в следующем порядке:
+
+1. город пользователя × направление;
+2. город пользователя × рынок гостиниц;
+3. регион пользователя × направление;
+4. регион пользователя × рынок гостиниц.
+
+Три варианта оценки на уровне страны проверены на отложенной выборке, но не
+используются для заполнения, поскольку дают существенно большую ошибку.
+Источник заполненного значения и результаты проверки качества хранятся в
+`fct_event` и `ref_distance_stats`.
+
+## Результаты проверки сборки
+
+- строк в `RAW`: `40 198 536`, в том числе `37 670 293` в `train` и
+  `2 528 243` в `test`;
+- строк событий в `STAGING`: `40 198 536`;
+- строк, отмеченных как полные дубликаты в `STAGING`: `1 922`;
+- строк событий в `CORE`: `40 197 567`;
+- строк, удалённых при контролируемой точной дедупликации: `969`;
+- проверка отсутствия размножения строк в `fct_event`: пройдена.
+
 - fct_event fan-out check: `PASS`
